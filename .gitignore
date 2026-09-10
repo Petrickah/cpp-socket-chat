@@ -1,0 +1,6 @@
+server/server
+client/client
+*.o
+*.out
+core
+core.*
