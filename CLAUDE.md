@@ -1,14 +1,14 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository. Current task-level progress lives in `.cpp-socket-chat.kanban.md`; check it first.
 
 ## Status
 
 Scaffold only (2026-09-10): directory layout, Makefile, CI mirror wired up.
 `server/main.cpp` and `client/main.cpp` are placeholder stubs — no socket code
-yet. Task decomposition for the actual implementation lives in a private vault
-note outside this repo; ask if you need that context, don't assume it's
-summarized correctly here.
+yet. Full task decomposition (Goal/Visible output/Done when per task) lives in
+a private vault note outside this repo; ask if you need that context, don't
+assume it's summarized correctly here.
 
 ## Methodology — who writes what
 
