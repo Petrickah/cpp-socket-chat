@@ -11,11 +11,11 @@
 // never depends on a build that doesn't exist yet.
 
 pipeline {
-    agent {
-        kubernetes {
-            inheritFrom 'kaniko'
-        }
-    }
+    // Docker-CI migration (Homelab Redux Valul 1): Kubernetes/Kaniko agent
+    // retired along with the K3s cluster. This stage only checks out and
+    // mirrors — no image build, no daemon access needed — so it just runs
+    // on the Jenkins controller directly.
+    agent any
     environment {
         GITHUB_MIRROR_URL = 'git@github.com:Petrickah/cpp-socket-chat.git'
     }
