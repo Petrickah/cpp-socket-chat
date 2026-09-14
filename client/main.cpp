@@ -11,21 +11,41 @@
 
 class TCPClient {
 public:
-    TCPClient(const int bufferSize): m_ClientBuffSize(bufferSize) {
+    enum class Status
+    {
+        UNKNOWN,
+        READY_TO_SEND,
+        READY_TO_RECIEVE,
+        RECIEVE,
+        SEND,
+    };
+
+    TCPClient(const int bufferSize): m_ClientBuffSize(bufferSize)
+    {
         // Create the new client socket using the TCP Protocol
         m_ClientSocketHandle = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
 
-        if (m_ClientSocketHandle < 0) {
+        if (m_ClientSocketHandle < 0)
+        {
             // We close the client with an error if the socket creation fails
             exit(this->Close(1, "Failed to create the socket"));
         }
+
+        m_ClientStatus = TCPClient::Status::UNKNOWN;
     }
 
-    ~TCPClient() {
-        delete[] m_ClientBuffer;
+    TCPClient::Status GetClientStatus() const
+    {
+        return m_ClientStatus;
     }
 
-    int Connect(const in_addr_t& serverAddress, const uint16_t& serverPort) {
+    void SetClientStatus(const TCPClient::Status& value)
+    {
+        m_ClientStatus = value;
+    }
+
+    bool Connect(const in_addr_t& serverAddress, const uint16_t& serverPort)
+    {
         memset(&m_ClientEchoServer, 0, sizeof(m_ClientEchoServer));
         m_ClientEchoServer.sin_family = AF_INET;
         m_ClientEchoServer.sin_addr.s_addr = serverAddress;
@@ -34,74 +54,85 @@ public:
         // Establish a connection
         m_ClientSocketConnection = connect(m_ClientSocketHandle, (struct sockaddr*) &m_ClientEchoServer, sizeof(m_ClientEchoServer));
 
-        if (m_ClientSocketConnection < 0) {
+        if (m_ClientSocketConnection < 0)
+        {
             // We close the client with an error if connection couldn't be established
             return this->Close(1, "Failed to establish a connection with the server");
         }
 
-        // When we establish a connection, only then we can allocate a buffer
-        m_ClientBuffer = new char[m_ClientBuffSize];
+        m_ClientStatus = TCPClient::Status::READY_TO_SEND;
 
-        return 0;
+        return true;
     }
 
-    int Send(const std::string& inputMessage) {
-        m_ClientRecieved = 0;
-        m_ClientEchoLength = inputMessage.length();
+    bool Send(const std::string& inputMessage)
+    {
+        m_ClientBuffer += inputMessage;
+        size_t retVal = send(m_ClientSocketHandle, inputMessage.c_str(), inputMessage.length(), 0);
 
-        if (send(m_ClientSocketHandle, inputMessage.c_str(), m_ClientEchoLength, 0) != m_ClientEchoLength) {
+        if (retVal != inputMessage.length())
+        {
             // We close the client with an error if the message sent was broken.
             return this->Close(1, "Mismatch in number of sent bytes");
         }
 
-        if (m_ClientEchoLength > 0) {
-            // Recieve the word back from the server
-            while (m_ClientRecieved < m_ClientEchoLength) {
-                int bytes = recv(m_ClientSocketHandle, m_ClientBuffer, m_ClientBuffSize-1, 0);
-                if (bytes < 1) {
-                    // We close the client with an error if the message wasn't recieved from server
-                    return this->Close(1, "Failed to receive bytes from the server");
-                }
-                
-                m_ClientRecieved += bytes;
-                m_ClientBuffer[bytes] = '\0';
-                
-                std::fprintf(stdout, "Recieved: %s\n", m_ClientBuffer);
+        return true;
+    }
 
-                if (std::strncmp(m_ClientBuffer, "EXIT", m_ClientRecieved) == 0) {
-                    return 1;
-                }
+    bool Recieve()
+    {
+        m_ClientBuffer = "";
+        m_ClientBuffer.resize(m_ClientBuffSize);
+
+        switch (recv(m_ClientSocketHandle, m_ClientBuffer.data(), m_ClientBuffer.size(), 0))
+        {
+            case (-1):
+            {
+                // ERROR - The server was previously disconnected?
+                return false;
+            }
+            case (0):
+            {
+                // CLEAR - The client didn't sent anything yet?
+                return this->Close(1, "The client didn't sent anything yet");
+            }
+            default:
+            {
+                std::fprintf(stdout, "%s", m_ClientBuffer.data());
             }
         }
 
-        return 0;
+        return true;
     }
 
-    int Close(const int& errorCode = 0, const char* message = "") {
+    bool Close(const int& errorCode = 0, const char* message = "")
+    {
         close(m_ClientSocketHandle);
 
-        if (errorCode) {
+        if (errorCode)
+        {
             perror(message);
         }
 
-        return errorCode;
+        return false;
     }
 
 private:
     int m_ClientSocketHandle = 0;
     int m_ClientSocketConnection = 0;
     
-    unsigned int m_ClientRecieved = 0;
-    unsigned int m_ClientEchoLength = 0;
     unsigned int m_ClientBuffSize = 0;
 
-    char* m_ClientBuffer = nullptr;
+    std::string m_ClientBuffer = "";
     struct sockaddr_in m_ClientEchoServer;
 
+    TCPClient::Status m_ClientStatus;
 };
 
-int main(int argc, char **argv) {
-    if (argc != 3) {
+int main(int argc, char **argv)
+{
+    if (argc != 3)
+    {
         std::fprintf(stderr, "USAGE: ./client <server_ip> <port>\n");
         exit(1);
     }
@@ -113,22 +144,66 @@ int main(int argc, char **argv) {
     const in_addr_t& serverAddress = inet_addr(argv[1]);
     const uint16_t& serverPort = htons(atoi(argv[2]));
 
-    if (serverAddress == INADDR_NONE) {
+    if (serverAddress == INADDR_NONE)
+    {
         return myClient.Close(1, "IP Address was incorrectly typed");
     }
 
-    if (myClient.Connect(serverAddress, serverPort) == 0) {
+    if (myClient.Connect(serverAddress, serverPort))
+    {
         std::string inputMessage = "";
-    
-        // Send a message to the server to recieve it back
-        while (myClient.Send(inputMessage) == 0) {
-            // Read the message we want to send until we type EXIT
-            std::cout << "(Type EXIT to close this client) >>> ";
-            std::getline(std::cin, inputMessage);
-        }
 
-        return myClient.Close();
+        // Send a message to the server to recieve it back
+        while (inputMessage.compare(0, inputMessage.length(), "EXIT\r\n"))
+        {
+            switch (myClient.GetClientStatus())
+            {
+                case TCPClient::Status::READY_TO_RECIEVE:
+                {
+                    std::fprintf(stdout, "(Type EXIT to close this client) <<< \n");
+
+                    // Recieve the information from server
+                    myClient.SetClientStatus(TCPClient::Status::RECIEVE);
+
+                    break;
+                }
+                case TCPClient::Status::READY_TO_SEND:
+                {
+                    std::fprintf(stdout, "(Type EXIT to close this client) >>> \n");
+                    
+                    // Send the information to server
+                    myClient.SetClientStatus(TCPClient::Status::SEND);
+                    
+                    break;
+                }
+                case TCPClient::Status::RECIEVE:
+                {
+                    if (myClient.Recieve())
+                    {
+                        myClient.SetClientStatus(TCPClient::Status::READY_TO_SEND);
+                    }
+                    
+                    break;
+                }
+                case TCPClient::Status::SEND:
+                {
+                    std::getline(std::cin, inputMessage);
+                    myClient.Send(inputMessage+="\r\n");
+
+                    if (inputMessage == "\r\n")
+                    {
+                        myClient.SetClientStatus(TCPClient::Status::READY_TO_RECIEVE);
+                    }
+                    
+                    break;
+                }
+                case TCPClient::Status::UNKNOWN:
+                {
+                    break;
+                }
+            }
+        }
     }
 
-    return 1;
+    return 0;
 }

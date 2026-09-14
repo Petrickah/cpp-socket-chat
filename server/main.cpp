@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <csignal>
 
 #include <unistd.h>
 #include <arpa/inet.h>
@@ -189,10 +190,10 @@ public:
 
     bool Handle(fd_set& rfds, std::map<int, TCPConnection>& echoServerClients)
     {
-        char buffer[m_SocketBufferSize] = "";
-        ssize_t retVal = recv(m_SocketHandle, &buffer, sizeof(buffer), 0);
-
-        switch (retVal)
+        m_SocketBuffer = "";
+        m_SocketBuffer.resize(m_SocketBufferSize);
+        
+        switch (ssize_t retVal = recv(m_SocketHandle, m_SocketBuffer.data(), m_SocketBuffer.size(), 0))
         {
             case (-1):
             {
@@ -206,19 +207,11 @@ public:
             }
             default:
             {
-                m_SocketBuffer = std::string(buffer);
-
-                std::fprintf(stdout, "Recieved: %s\n", (char*)m_SocketBuffer.data());
+                std::fprintf(stdout, "%s\n", m_SocketBuffer.data());
         
-                if (send(m_SocketHandle, (void*)m_SocketBuffer.data(), retVal, 0) != retVal)
+                if (send(m_SocketHandle, m_SocketBuffer.data(), retVal, 0) != retVal)
                 {
-                    // We close the client with an error if the message couldn't be send
-                    return this->Close(rfds, echoServerClients, 1, "Failed to send bytes back to client");
-                }
-                else if (!m_SocketBuffer.compare(0, retVal, "EXIT"))
-                {
-                    // We close the client with an warning if the message recieved was EXIT
-                    return this->Close(rfds, echoServerClients, 0, "The client has been disconected");
+                    return true;
                 }
             }
         }
@@ -237,12 +230,13 @@ public:
         m_SocketAvailable = other.m_SocketAvailable;
         m_SocketConnected = other.m_SocketConnected;
         m_SocketHandle = other.m_SocketHandle;
-        m_SocketBufferSize = other.m_SocketBufferSize;
         m_SocketLength = other.m_SocketLength;
         m_SocketAddress = other.m_SocketAddress;
         m_SocketMaxPending = other.m_SocketMaxPending;
-
-        m_SocketBuffer.copy((char*)other.m_SocketBuffer.data(), other.m_SocketBufferSize, 0);
+        
+        m_SocketBufferSize = other.m_SocketBufferSize;
+        m_SocketBuffer.resize(other.m_SocketBufferSize);
+        other.m_SocketBuffer.copy((char*)m_SocketBuffer.data(), other.m_SocketBufferSize, 0);
 
         return *this;
     }
@@ -291,7 +285,7 @@ private:
     int m_SocketHandle = 0;
     
     std::string m_SocketBuffer;
-    size_t m_SocketBufferSize = 0;
+    ssize_t m_SocketBufferSize = 0;
     socklen_t m_SocketLength;
     sockaddr_in m_SocketAddress;
     timeval m_SocketMaxPending;
@@ -349,10 +343,13 @@ private:
 // Scaffold placeholder — Task 1.1 (TCP echo listener) replaces this.
 int main(int argc, char** argv)
 {
-    if (argc != 2) {
+    if (argc != 2)
+    {
         std::fprintf(stderr, "USAGE: ./server <port>\n");
         exit(1);
     }
+
+    signal(SIGPIPE, SIG_IGN);
 
     const uint16_t& bufferSize = 512;
     const uint16_t& serverPort = htons(atoi(argv[1]));
