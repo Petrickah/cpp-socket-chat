@@ -13,41 +13,37 @@
 
 class TCPConnection {
 public:
+    TCPConnection() = default;
+
     TCPConnection(const TCPConnection& other)
-        : m_SocketBound(other.m_SocketBound)
-        , m_SocketAvailable(other.m_SocketAvailable)
-        , m_SocketConnected(other.m_SocketConnected)
-        , m_SocketHandle(other.m_SocketHandle)
-        , m_SocketBufferSize(other.m_SocketBufferSize)
-        , m_SocketLength(other.m_SocketLength)
-        , m_SocketAddress(other.m_SocketAddress)
-        , m_SocketMaxPending(other.m_SocketMaxPending)
     {
-        m_SocketBuffer = (char*)malloc(other.m_SocketBufferSize);
-        memcpy(m_SocketBuffer, other.m_SocketBuffer, other.m_SocketBufferSize);
+        this->Copy(other);
     }
 
-    TCPConnection(const uint16_t serverPort = 6667, const int bufferSize = 512, const int maxPending = 5) : m_SocketAvailable(true)
+    TCPConnection(fd_set& rfds, std::map<int, TCPConnection>& echoServerClients, const uint16_t serverPort = 6667, const int socketBufferSize = 512, const int maxPending = 5) : m_SocketAvailable(true)
     {
         m_SocketHandle = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP); // Create the new server socket using the TCP Protocol
-        if (m_SocketHandle < 0 && this->Close(1, "Failed to create the server socket"))
+        if (m_SocketHandle < 0 && this->Close(rfds, echoServerClients, 1, "Failed to create the socket"))
         {
             m_SocketAvailable = false;
         }
 
         const int enable = 1;
-        if (setsockopt(m_SocketHandle, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(int)) < 0 && this->Close(1, "Failed to set reuse address for the server socket"))
+        if (setsockopt(m_SocketHandle, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(int)) < 0 && this->Close(rfds, echoServerClients, 1, "Failed to set reuse address for the server socket"))
         {
             m_SocketAvailable = false;
         }
 
         if (m_SocketAvailable)
         {
-            m_SocketBufferSize = bufferSize * sizeof(char);
-            m_SocketBuffer = (char*)malloc(m_SocketBufferSize);
+            // Construct the socket buffer
+            m_SocketBuffer = "";
+            m_SocketBuffer.reserve(socketBufferSize);
+            m_SocketBufferSize = m_SocketBuffer.capacity();
+
             m_SocketLength = sizeof(m_SocketAddress);
-        
-            // Construct the server SockAddr_In structure
+            
+            // Construct the socket SockAddr_In structure
             memset(&m_SocketAddress, 0, m_SocketLength);
             m_SocketAddress.sin_family = AF_INET;
             m_SocketAddress.sin_addr.s_addr = htonl(INADDR_ANY);
@@ -66,86 +62,168 @@ public:
         serverSocketHandleSetSize = m_SocketHandle + 1;
     }
 
-    void Bind()
+    void Bind(fd_set& rfds, std::map<int, TCPConnection>& echoServerClients)
     {
         m_SocketBound = true;
         m_SocketConnected = true;
         
         // Bind on the server Socket;
-        if (bind(m_SocketHandle, (struct sockaddr *) &m_SocketAddress, m_SocketLength) < 0 && this->Close(1, "Failed to bind the server socket"))
+        if (bind(m_SocketHandle, (struct sockaddr *) &m_SocketAddress, m_SocketLength) < 0 && this->Close(rfds, echoServerClients, 1, "Failed to bind the server socket"))
         {
             m_SocketBound = false;
         }
 
-        if (listen(m_SocketHandle, m_SocketMaxPending.tv_sec) < 0 && this->Close(1, "Failed to listen on server socket"))
+        if (listen(m_SocketHandle, m_SocketMaxPending.tv_sec) < 0 && this->Close(rfds, echoServerClients, 1, "Failed to listen on server socket"))
         {
             m_SocketConnected = false;
         }
     }
 
-    bool Connect(fd_set& serverSocketHandleSet)
+    bool Close(fd_set& rfds, std::map<int, TCPConnection>& echoServerClients, const int& errorCode = 0, const char* message = "")
     {
+        auto currClientSocketIterator = echoServerClients.find(m_SocketHandle);
+
+        if (currClientSocketIterator != echoServerClients.end())
+        {
+            echoServerClients.erase(currClientSocketIterator);
+
+            switch (errorCode)
+            {
+                case (0):
+                {
+                    if (strlen(message) > 0)
+                    {
+                        std::fprintf(stdout, "Status: %s\n", message);
+                    }
+
+                    break;
+                }
+                default:
+                {
+                    if (strlen(message) > 0)
+                    {
+                        perror(message);
+                    }
+
+                    break;
+                }
+            }
+
+            close(m_SocketHandle);
+            FD_CLR(m_SocketHandle, &rfds);
+        }
+
+        return true;
+    }
+
+
+    TCPConnection& Connect(fd_set& rfds, std::map<int, TCPConnection>& echoServerClients)
+    {
+        m_SocketConnected = true;
+        
         m_SocketHandle = accept(m_SocketHandle, (struct sockaddr*)&m_SocketAddress, &m_SocketLength);
-
-        if (m_SocketHandle < 0 && this->Close(1, "Failed to accept a connection"))
+        if (m_SocketHandle < 0 && this->Close(rfds, echoServerClients, 1, "Failed to accept a connection"))
         {
-            return false;
+            m_SocketConnected = false;
         }
 
-        std::fprintf(stdout, "Client connected: %s:%d\n", inet_ntoa(m_SocketAddress.sin_addr), htons(m_SocketAddress.sin_port));
-        FD_SET(m_SocketHandle, &serverSocketHandleSet);
+        if (m_SocketConnected)
+        {
+            std::fprintf(stdout, "Client connected: %s:%d\n", inet_ntoa(m_SocketAddress.sin_addr), htons(m_SocketAddress.sin_port));
+            
+            // Socket is connected
+            FD_SET(m_SocketHandle, &rfds);
+            
+            // Construct the socket buffer
+            m_SocketBuffer = "";
+            m_SocketBuffer.reserve(m_SocketBufferSize);
+        }
 
-        return true;
+        return this->Copy(*this);
     }
 
-    bool Handle()
+    TCPConnection& Update(fd_set& rfds, fd_set crfds, std::map<int, TCPConnection>& echoServerClients)
     {
-        ssize_t retVal = recvfrom(m_SocketHandle, m_SocketBuffer, m_SocketBufferSize, 0, (struct sockaddr*) &m_SocketAddress, &m_SocketLength);
-        
-        if (retVal < 1)
+        for (auto clientConnection : echoServerClients)
         {
-            // We close the client with an warning if the client was closed
-            return this->Close(0, "The client has been disconected");
-        }
-        else
-        {
-            m_SocketBuffer[retVal] = '\0';
-            std::fprintf(stdout, "Recieved: %s\n", m_SocketBuffer);
-    
-            if (sendto(m_SocketHandle, m_SocketBuffer, retVal, 0, (struct sockaddr*) &m_SocketAddress, m_SocketLength) != retVal)
+            TCPConnection& connection = clientConnection.second;
+            if (connection.IsReady(crfds))
             {
-                // We close the client with an error if the message couldn't be send
-                return this->Close(1, "Failed to send bytes back to client");
+                return this->Copy(connection);
             }
-    
-            if (std::strncmp(m_SocketBuffer, "EXIT", retVal) == 0)
+        }
+
+        if (this->IsReady(crfds))
+        {
+            return this->Connect(rfds, echoServerClients);
+        }
+
+        return this->Copy(*this);
+    }
+
+    TCPConnection& Select(int nfds, fd_set& rfds, std::map<int, TCPConnection>& echoServerClients)
+    {
+        fd_set crfds = rfds;
+        struct timeval tv = m_SocketMaxPending;
+        int retVal = select(nfds, &crfds, NULL, NULL, &tv);
+
+        switch (retVal)
+        {
+            case (-1):
             {
-                // We close the client with an warning if the message recieved was EXIT
-                return this->Close(0, "The client has been disconected");
+                // Error - We consider the server is free to choose from the next clients
+                return this->Copy(*this);
+            }
+            case (0):
+            {
+                // Timeout - We consider the server is free to choose from the next clients
+                return this->Copy(*this);
+            }
+            default:
+            {
+                // Accepted - We consider the server is ready to recieve something from a client
+                return this->Update(rfds, crfds, echoServerClients);
+            }
+        }
+    }
+
+    bool Handle(fd_set& rfds, std::map<int, TCPConnection>& echoServerClients)
+    {
+        char buffer[m_SocketBufferSize] = "";
+        ssize_t retVal = recv(m_SocketHandle, &buffer, sizeof(buffer), 0);
+
+        switch (retVal)
+        {
+            case (-1):
+            {
+                // ERROR - The client was previously disconnected?
+                return false;
+            }
+            case (0):
+            {
+                // CLEAR - The client didn't sent anything yet?
+                return this->Close(rfds, echoServerClients, 0, "The client has been disconected");
+            }
+            default:
+            {
+                m_SocketBuffer = std::string(buffer);
+
+                std::fprintf(stdout, "Recieved: %s\n", (char*)m_SocketBuffer.data());
+        
+                if (send(m_SocketHandle, (void*)m_SocketBuffer.data(), retVal, 0) != retVal)
+                {
+                    // We close the client with an error if the message couldn't be send
+                    return this->Close(rfds, echoServerClients, 1, "Failed to send bytes back to client");
+                }
+                else if (!m_SocketBuffer.compare(0, retVal, "EXIT"))
+                {
+                    // We close the client with an warning if the message recieved was EXIT
+                    return this->Close(rfds, echoServerClients, 0, "The client has been disconected");
+                }
             }
         }
 
         return true;
-    }
-
-    bool Close(const int& errorCode = 0, const char* message = "")
-    {
-        free(m_SocketBuffer);
-        close(m_SocketHandle);
-
-        if (strlen(message) > 0)
-        {
-            if (errorCode > 0)
-            {
-                perror(message);
-            }
-            else
-            {
-                std::fprintf(stdout, "Status: %s\n", message);
-            }
-        }
-        
-        return false;
     }
 
     bool operator==(const TCPConnection& other) const
@@ -153,7 +231,7 @@ public:
         return m_SocketHandle == other.GetSocketHandle();
     }
 
-    constexpr TCPConnection& operator=(const TCPConnection& other)
+    TCPConnection& Copy(const TCPConnection& other)
     {
         m_SocketBound = other.m_SocketBound;
         m_SocketAvailable = other.m_SocketAvailable;
@@ -164,9 +242,14 @@ public:
         m_SocketAddress = other.m_SocketAddress;
         m_SocketMaxPending = other.m_SocketMaxPending;
 
-        memcpy(m_SocketBuffer, other.m_SocketBuffer, other.m_SocketBufferSize);
+        m_SocketBuffer.copy((char*)other.m_SocketBuffer.data(), other.m_SocketBufferSize, 0);
 
         return *this;
+    }
+
+    TCPConnection& operator=(const TCPConnection& other)
+    {
+        return this->Copy(other);
     }
 
 public:
@@ -190,6 +273,11 @@ public:
         return m_SocketAvailable;
     }
 
+    bool IsConnected() const
+    {
+        return m_SocketConnected;
+    }
+
     bool IsReady(fd_set& serverSocketHandleSet) const
     {
         return FD_ISSET(m_SocketHandle, &serverSocketHandleSet);
@@ -202,125 +290,58 @@ private:
 
     int m_SocketHandle = 0;
     
+    std::string m_SocketBuffer;
     size_t m_SocketBufferSize = 0;
     socklen_t m_SocketLength;
     sockaddr_in m_SocketAddress;
     timeval m_SocketMaxPending;
 
-    char* m_SocketBuffer = nullptr;
 };
 
 class TCPServer {
 public:
     TCPServer(const uint16_t serverPort = 6667, const int bufferSize = 512, const int maxPending = 5) 
-        : m_EchoServerConnection(serverPort, bufferSize, maxPending)
+        : m_EchoServerConnection(m_ServerSocketHandleSet, m_EchoServerClients, serverPort, bufferSize, maxPending)
     {
-        m_EchoServerConnection.Bind();
+        m_EchoServerConnection.Bind(m_ServerSocketHandleSet, m_EchoServerClients);
         m_EchoServerConnection.Register(m_ServerSocketHandleSet, m_ServerSocketHandleSetSize);
     }
 
-    int Update()
+    bool Update()
     {
         while (m_EchoServerConnection.IsBound())
         {
-            TCPConnection* clientConnection    = nullptr;
+            TCPConnection clientConnection = TCPConnection(m_EchoServerConnection)
+                .Select(m_ServerSocketHandleSetSize, m_ServerSocketHandleSet, m_EchoServerClients);
             
-            if (SelectClient(m_ServerSocketHandleSetSize, m_ServerSocketHandleSet, clientConnection))
+            if (clientConnection == m_EchoServerConnection)
             {
-                if (clientConnection == nullptr)
-                {
-                    TCPConnection clientConnectionNew = TCPConnection(m_EchoServerConnection);
+                continue;
+            }
 
-                    if (clientConnectionNew.Connect(m_ServerSocketHandleSet) && m_EchoServerClients.find(clientConnectionNew.GetSocketHandle()) == m_EchoServerClients.end())
-                    {
-                        m_EchoServerClients.insert(std::make_pair(clientConnectionNew.GetSocketHandle(), clientConnectionNew));
-    
-                        if (clientConnectionNew.GetSocketHandle() + 1 > m_ServerSocketHandleSetSize)
-                        {
-                            m_ServerSocketHandleSetSize = clientConnectionNew.GetSocketHandle() + 1;
-                        }
-                    }
-    
-                    clientConnection = &clientConnectionNew;
-                }
-                else if (!clientConnection->Handle())
+            if (m_EchoServerClients.find(clientConnection.GetSocketHandle()) == m_EchoServerClients.end())
+            {
+                m_EchoServerClients.insert(std::make_pair(clientConnection.GetSocketHandle(), clientConnection));
+
+                if (clientConnection.GetSocketHandle() + 1 > m_ServerSocketHandleSetSize)
                 {
-                    std::map<int, TCPConnection>::const_iterator currClientSocketIterator = m_EchoServerClients.find(clientConnection->GetSocketHandle());
-                    if (currClientSocketIterator != m_EchoServerClients.end())
-                    {
-                        m_EchoServerClients.erase(currClientSocketIterator);
-                        FD_CLR(clientConnection->GetSocketHandle(), &m_ServerSocketHandleSet);
-                    }
+                    m_ServerSocketHandleSetSize = clientConnection.GetSocketHandle() + 1;
                 }
             }
-        }
-
-        return m_EchoServerConnection.Close();
-    }
-
-private:
-    bool UpdateSocketHandleSet(fd_set& rfds, TCPConnection*& clientConnection)
-    {
-        if (m_EchoServerConnection.IsReady(rfds))
-        {
-            clientConnection = nullptr;
-            return true;
-        }
-
-        std::map<int, TCPConnection>::const_iterator currClientSocketIterator = m_EchoServerClients.begin();
-        while (currClientSocketIterator != m_EchoServerClients.end())
-        {
-            clientConnection = const_cast<TCPConnection*>(&currClientSocketIterator->second);
-
-            if (clientConnection->IsReady(rfds))
+            else
             {
-                return true;
-            }
-            
-            currClientSocketIterator++;
-        }
-
-        return false;
-    }
-
-    bool SelectClient(int nfds, fd_set rfds, TCPConnection*& clientConnection)
-    {
-        struct timeval tv = m_EchoServerConnection.GetTimeValue();
-        switch (select(nfds, &rfds, NULL, NULL, &tv))
-        {
-            case (-1):
-            {
-                // Error - We consider the server is free to choose from the next clients
-                return false;
-            }
-            case (0):
-            {
-                // Timeout - We consider the server is free to choose from the next clients
-                return false;
-            }
-            default:
-            {
-                // Accepted - We consider the server is ready to recieve something from a client
-                if (UpdateSocketHandleSet(rfds, clientConnection) && clientConnection != nullptr)
-                {
-                    std::map<int, TCPConnection>::const_iterator currClientSocketIterator = m_EchoServerClients.find(clientConnection->GetSocketHandle());
-                    if (currClientSocketIterator != m_EchoServerClients.end())
-                    {
-                        clientConnection = const_cast<TCPConnection*>(&currClientSocketIterator->second);
-                    }
-                }
-
-                return true;
+                clientConnection.Handle(m_ServerSocketHandleSet, m_EchoServerClients);
             }
         }
-        
-        return false;
+
+        return true;
     }
 
 private:
     int m_ServerSocketHandleSetSize = 0;
 
     fd_set m_ServerSocketHandleSet;
+    
     TCPConnection m_EchoServerConnection;
     std::map<int, TCPConnection> m_EchoServerClients;
 };
